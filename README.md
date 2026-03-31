@@ -18,6 +18,14 @@ tar -xzf anthropic-ai-claude-code-${cc_ver}.tgz -C claude-code-${cc_ver} --strip
 reverse-sourcemap -v -o unpack claude-code-${cc_ver}/cli.js.map
 ```
 
+也可以
+
+```bash
+node ./bin/open-claude-code.js -v 2.1.88 -d ./src
+node ./src/open-claude-code-2.1.88/cli.js --version
+```
+
+
 ## 输出结构
 
 解包后得到以下文件和目录：
