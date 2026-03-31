@@ -440,6 +440,7 @@ for (const [fileName, contents] of Object.entries(stubFiles)) {
 fs.writeFileSync(
   path.join(outDir, 'build.mjs'),
   `import { mkdir, readFile } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -487,7 +488,7 @@ const featureFlagsOffPlugin = {
 
 await mkdir(distDir, { recursive: true });
 
-await build({
+const buildOptions = {
   entryPoints: [path.join(runtimeSrc, 'entrypoints', 'cli.tsx')],
   outfile: path.join(distDir, 'cli.js'),
   bundle: true,
@@ -522,7 +523,29 @@ await build({
   },
   plugins: [featureFlagsOffPlugin],
   tsconfig: path.join(__dirname, 'tsconfig.json'),
-});
+};
+
+const MAX_BUILD_ATTEMPTS = 5;
+
+for (let attempt = 1; attempt <= MAX_BUILD_ATTEMPTS; attempt += 1) {
+  try {
+    await build(buildOptions);
+    break;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const retryable =
+      message.includes('The service was stopped') ||
+      message.includes('The service is no longer running');
+    if (!retryable || attempt === MAX_BUILD_ATTEMPTS) {
+      throw error;
+    }
+
+    process.stderr.write(
+      \`esbuild stopped unexpectedly, retrying build (\${attempt}/\${MAX_BUILD_ATTEMPTS})\\n\`,
+    );
+    await delay(500 * attempt);
+  }
+}
 `,
 );
 

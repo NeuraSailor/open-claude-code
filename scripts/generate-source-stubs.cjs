@@ -17,6 +17,152 @@ function writeStub(relativePath, contents) {
   fs.writeFileSync(filePath, contents);
 }
 
+function walkFiles(dir) {
+  const files = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...walkFiles(fullPath));
+      continue;
+    }
+    if (/\.(ts|tsx|js|jsx)$/.test(entry.name)) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+function stripTypePrefix(name) {
+  return name.replace(/^\s*type\s+/, '').trim();
+}
+
+function parseNamedImports(raw) {
+  return raw
+    .split(',')
+    .map(part => stripTypePrefix(part))
+    .map(part => part.split(/\s+as\s+/i)[0]?.trim())
+    .filter(Boolean);
+}
+
+function addRef(refs, specifier, update) {
+  if (!specifier) return;
+  const current =
+    refs.get(specifier) ?? {
+      default: false,
+      namespace: false,
+      named: new Set(),
+    };
+  update(current);
+  refs.set(specifier, current);
+}
+
+function collectLocalReferences(filePath) {
+  const source = fs.readFileSync(filePath, 'utf8');
+  const refs = new Map();
+
+  for (const match of source.matchAll(/import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]/g)) {
+    const clause = match[1]?.trim();
+    const specifier = match[2];
+    if (!specifier) continue;
+
+    addRef(refs, specifier, ref => {
+      if (!clause) return;
+      if (clause.startsWith('{')) {
+        for (const name of parseNamedImports(clause.slice(1, -1))) {
+          ref.named.add(name);
+        }
+        return;
+      }
+
+      if (clause.startsWith('* as ')) {
+        ref.namespace = true;
+        ref.default = true;
+        return;
+      }
+
+      const parts = clause.split(',');
+      const defaultImport = stripTypePrefix(parts[0] ?? '');
+      if (defaultImport) ref.default = true;
+      const namedPart = parts.slice(1).join(',').trim();
+      if (namedPart.startsWith('{')) {
+        for (const name of parseNamedImports(namedPart.slice(1, -1))) {
+          ref.named.add(name);
+        }
+      }
+    });
+  }
+
+  for (const match of source.matchAll(/export\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g)) {
+    const specifier = match[2];
+    addRef(refs, specifier, ref => {
+      for (const name of parseNamedImports(match[1] ?? '')) {
+        ref.named.add(name);
+      }
+    });
+  }
+
+  for (const match of source.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)\.([A-Za-z_$][\w$]*)/g)) {
+    const specifier = match[1];
+    const name = match[2];
+    addRef(refs, specifier, ref => {
+      if (name) ref.named.add(name);
+    });
+  }
+
+  for (const match of source.matchAll(/import\(\s*['"]([^'"]+)['"]\s*\)/g)) {
+    const specifier = match[1];
+    addRef(refs, specifier, ref => {
+      ref.default = true;
+    });
+  }
+
+  for (const match of source.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)) {
+    const specifier = match[1];
+    addRef(refs, specifier, ref => {
+      ref.default = true;
+    });
+  }
+
+  return refs;
+}
+
+function resolveLocalTarget(fromFile, specifier) {
+  if (specifier.startsWith('src/')) {
+    return path.join(runtimeSrcDir, specifier.slice(4));
+  }
+  if (specifier.startsWith('.')) {
+    return path.resolve(path.dirname(fromFile), specifier);
+  }
+  return null;
+}
+
+function hasSourceForTarget(targetPath) {
+  if (fs.existsSync(targetPath)) return true;
+  const ext = path.extname(targetPath);
+  const base = ext ? targetPath.slice(0, -ext.length) : targetPath;
+  for (const candidate of [
+    '.ts',
+    '.tsx',
+    '.js',
+    '.jsx',
+    '.txt',
+    '.md',
+    '.json',
+  ]) {
+    if (fs.existsSync(base + candidate)) return true;
+  }
+  return false;
+}
+
+function makeAutoStub(ref) {
+  const lines = ['const stub = {};', 'export default stub;'];
+  for (const name of [...ref.named].sort()) {
+    if (!/^[$A-Z_a-z][$\w]*$/.test(name)) continue;
+    lines.push(`export const ${name} = undefined;`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 if (!fs.existsSync(runtimeSrcDir)) {
   process.stderr.write(`missing recovered source directory: ${runtimeSrcDir}\n`);
   process.exit(1);
@@ -260,6 +406,25 @@ writeStub(
   `export class VerifyPlanExecutionTool {}
 `,
 );
+
+for (const filePath of walkFiles(runtimeSrcDir)) {
+  const refs = collectLocalReferences(filePath);
+  for (const [specifier, ref] of refs.entries()) {
+    if (!specifier.startsWith('.') && !specifier.startsWith('src/')) continue;
+    const targetPath = resolveLocalTarget(filePath, specifier);
+    if (!targetPath) continue;
+    if (hasSourceForTarget(targetPath)) continue;
+
+    ensureParent(targetPath);
+    const ext = path.extname(targetPath);
+    if (ext === '.txt' || ext === '.md') {
+      fs.writeFileSync(targetPath, '');
+      continue;
+    }
+
+    fs.writeFileSync(targetPath, makeAutoStub(ref));
+  }
+}
 
 writeStub(
   'tools/WorkflowTool/constants.ts',

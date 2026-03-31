@@ -34,6 +34,40 @@ function run(command, args, options = {}) {
   return result.stdout.trim();
 }
 
+function runWithRetry(command, args, options = {}, retryOptions = {}) {
+  const {
+    attempts = 1,
+    retryOn = () => false,
+    label = `${command} ${args.join(' ')}`,
+  } = retryOptions;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const result = spawnSync(command, args, {
+      cwd: rootDir,
+      encoding: 'utf8',
+      stdio: ['inherit', 'pipe', 'pipe'],
+      ...options,
+    });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+    if (result.status === 0) {
+      return (result.stdout ?? '').trim();
+    }
+
+    const shouldRetry = attempt < attempts && retryOn(output, result);
+    if (shouldRetry) {
+      process.stderr.write(
+        `${label} failed, retrying (${attempt}/${attempts})\n`,
+      );
+      continue;
+    }
+
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    process.exit(result.status ?? 1);
+  }
+}
+
 function parsePackFilename(output) {
   const trimmed = output.trim();
   if (!trimmed) {
@@ -135,7 +169,21 @@ run(
   ['install', '--package-lock=false', '--no-audit', '--no-fund'],
   { cwd: sourceBuildDir },
 );
-run('node', [path.join(sourceBuildDir, 'build.mjs')], { cwd: sourceBuildDir });
+runWithRetry(
+  'npx',
+  ['--yes', 'node@20', path.join(sourceBuildDir, 'build.mjs')],
+  { cwd: sourceBuildDir },
+  {
+    attempts: 5,
+    label: 'source build',
+    retryOn(output) {
+      return (
+        output.includes('The service was stopped') ||
+        output.includes('The service is no longer running')
+      );
+    },
+  },
+);
 
 removeGeneratedTargets();
 
