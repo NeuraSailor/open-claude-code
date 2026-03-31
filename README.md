@@ -13,25 +13,31 @@
 cc_ver=2.1.88
 npm install -g reverse-sourcemap
 npm pack @anthropic-ai/claude-code@${cc_ver}
-mkdir -p claude-code-${cc_ver} claude-code-${cc_ver}-src
+mkdir -p claude-code-${cc_ver} unpack
 tar -xzf anthropic-ai-claude-code-${cc_ver}.tgz -C claude-code-${cc_ver} --strip-components=1
-reverse-sourcemap -v -o claude-code-${cc_ver}-src claude-code-${cc_ver}/cli.js.map
+reverse-sourcemap -v -o unpack claude-code-${cc_ver}/cli.js.map
 ```
 
 ## 输出结构
 
-解包后得到两个目录：
+解包后得到以下文件和目录：
 
-### `claude-code-{version}/`
-npm 包原始内容：
+### `./anthropic-ai-claude-code-{version}.tgz`
+
+npm 原始包
+
+### `./claude-code-{version}/`
+
+npm 原始包原始内容：
 - `cli.js` — 打包后的 CLI 入口（~13MB）
 - `cli.js.map` — Source map 文件（~60MB）
 
-### `claude-code-{version}-src/`
+### `./unpack/claude-code-{version}/`
+
 还原的 TypeScript 源码：
 
 ```
-claude-code-{version}-src/
+./unpack/claude-code-{version}/
 ├── src/                # 主源码目录（~1900 个 .ts 文件）
 │   ├── main.tsx        # 入口文件
 │   ├── tools/          # 工具模块
